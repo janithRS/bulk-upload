@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use Illuminate\Support\Facades\DB;
 use Session;
 use App\Models\Institution;
 use Illuminate\Http\Request;
@@ -18,6 +19,7 @@ use App\Exports\ExaminationStudentsExport;
 use App\Imports\ExaminationStudentsImport;
 use App\Models\Institution_student_admission;
 use Illuminate\Support\Facades\Log;
+use Yajra\DataTables\DataTables;
 
 class ExaminationStudentsController extends Controller
 {
@@ -27,22 +29,47 @@ class ExaminationStudentsController extends Controller
         $this->grade = $grade;
         $this->student = new Security_user();
         $this->examination_student = new Examination_student();
-        $this->academic_period =  Academic_period::where('code', '=', $this->year)->first();
+        $this->academic_period = Academic_period::where('code', '=', $this->year)->first();
         $this->education_grade = Education_grade::where('code', '=', $this->grade)->first();
         $this->output = new \Symfony\Component\Console\Output\ConsoleOutput();
     }
 
     public function index()
     {
+//        dd(Datatables::of(DB::table('exam_students_upload'))->make(true));
         return view('uploadcsv');
+    }
+
+    public function create()
+    {
+        return Datatables::of(DB::table('exam_students_upload'))
+            ->editColumn('status', function ($data) {
+                if ($data->status === 0) {
+                    return "Not Processed";
+                }elseif($data->status === 1 ){
+                    return 'Processed';
+                }elseif($data->status === 2 ){
+                    return 'Processing Paused';
+                }else{
+                    return 'Failed';
+                }
+            })
+            ->addColumn('action', function () {
+                return '<div class="container">
+                            <a href="#edit-" class="btn btn-block btn-xs btn-success">Process</a>
+                            <button onclick="downloadFile()" class="btn btn-block btn-xs btn-primary">Download</button>
+                        </div>';
+            })
+            ->make(true);
     }
 
     public function uploadFile(Request $request)
     {
-
         if ($request->input('submit') != null) {
 
             $file = $request->file('file');
+            $year = $request->input('year');
+            $exam = $request->input('exam');
 
             // File Details
             $filename = 'exams_students.csv';
@@ -54,37 +81,48 @@ class ExaminationStudentsController extends Controller
 
             // 20MB in Bytes
             $maxFileSize = 30971520;
+            $nowTime = \Carbon\Carbon::now();
 
             // Check file extension
             if (in_array(strtolower($extension), $valid_extension)) {
 
                 // Check file size
                 if ($fileSize <= $maxFileSize) {
+                    $toBeSavedFileName = (substr($filename, 0, -4)) . ' ' . $nowTime;
 
                     // File upload location
                     Storage::disk('local')->putFileAs(
                         'examination/',
                         $file,
-                        $filename
+                        $toBeSavedFileName
                     );
-                    Session::flash('message', 'File upload successfully!');
+                    //save to db function
+                    DB::table('exam_students_upload')->insert(
+                        ['filename' => $toBeSavedFileName, 'status' => 0, 'year' => $year, 'exam' =>$exam,
+                            'db_status' => 0, 'nsid_status' => 0]
+                    );
+
+                    Session::flash('message', 'File upload successful!');
+                    Session::flash('alert-class', 'alert-success');
                     // Redirect to index
                 } else {
-                    Session::flash('message', 'File too large. File must be less than 20MB.');
+                    Session::flash('message', 'File is too large. File must be less than 20MB.');
+                    Session::flash('alert-class', 'alert-warning');
                 }
             } else {
                 Session::flash('message', 'Invalid File Extension.');
+                Session::flash('alert-class', 'alert-danger');
             }
         }
         return redirect()->action('ExaminationStudentsController@index');
     }
 
     /**
-     * Import students data to the Examinations table 
+     * Import students data to the Examinations table
      *
      * @return void
      */
-    public static function callOnClick()
+    public static function importCsvToDb()
     {
         // Import CSV to Database
         $excelFile = "/examination/exams_students.csv";
@@ -98,7 +136,7 @@ class ExaminationStudentsController extends Controller
      *
      * @return void
      */
-    public  function doMatch()
+    public function doMatch()
     {
         $students = Examination_student::get()->toArray();
         //    array_walk($students,array($this,'clone'));
@@ -162,11 +200,11 @@ class ExaminationStudentsController extends Controller
                 ]
             )->join('institution_class_grades', 'institution_classes.id', 'institution_class_grades.institution_class_id')->get()->toArray();
 
-            // set search variables 
+            // set search variables
             $admissionInfo = [
                 'instituion_class' => $institutionClass,
                 'instituion' => $institution,
-                'education_grade' =>  $this->education_grade,
+                'education_grade' => $this->education_grade,
                 'academic_period' => $this->academic_period
             ];
 
@@ -188,12 +226,12 @@ class ExaminationStudentsController extends Controller
                     Institution_student_admission::createExaminationData($student, $admissionInfo);
                     Institution_student::createExaminationData($student, $admissionInfo);
                 }
-                // update the matched student's data    
+                // update the matched student's data
             } else {
                 $studentData = $this->student->updateExaminationStudent($student, $matchedStudent);
                 $studentData['student_id'] = $studentData['id'];
-                $matchedStudent = array_merge((array) $student, $matchedStudent);
-                $studentData = array_merge((array) $matchedStudent, $matchedStudent);
+                $matchedStudent = array_merge((array)$student, $matchedStudent);
+                $studentData = array_merge((array)$matchedStudent, $matchedStudent);
                 Institution_student::updateExaminationData($studentData, $admissionInfo);
                 $this->updateStudentId($student, $matchedStudent);
             }
@@ -201,7 +239,7 @@ class ExaminationStudentsController extends Controller
     }
 
     /**
-     * This function is implemented similar_text search algorithm 
+     * This function is implemented similar_text search algorithm
      * to get the most matching name with the existing students
      * data set
      *
@@ -241,7 +279,7 @@ class ExaminationStudentsController extends Controller
             }
 
             if (($previousValue)) {
-                $highest =  ($percentage > $previousValue['rate']) ? $value : $value;
+                $highest = ($percentage > $previousValue['rate']) ? $value : $value;
             } else {
                 $highest = $value;
             }
@@ -249,12 +287,12 @@ class ExaminationStudentsController extends Controller
         }
 
         //If the not matched 100% try to get most highest value with full name
-        if (($highest['rate']  < 100) || (count($matchedData) > 1)) {
+        if (($highest['rate'] < 100) || (count($matchedData) > 1)) {
             foreach ($sis_students as $key => $value) {
                 similar_text(strtoupper($student['f_name']), strtoupper($value['first_name']), $percentage);
                 $value['rate'] = $percentage;
                 if (($previousValue)) {
-                    $highest =  ($percentage > $previousValue['rate']) ? $value : $value;
+                    $highest = ($percentage > $previousValue['rate']) ? $value : $value;
                 } else {
                     $highest = $value;
                 }
@@ -274,7 +312,7 @@ class ExaminationStudentsController extends Controller
     public function updateStudentId($student, $sis_student)
     {
         try {
-            $student['nsid'] =  $sis_student['openemis_no'];
+            $student['nsid'] = $sis_student['openemis_no'];
 
             // add new NSID to the examinations data set
             $this->examination_student->where(['st_no' => $student['st_no']])->update($student);
